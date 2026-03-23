@@ -1,23 +1,42 @@
 #!/usr/bin/env python3
 """
-🦊 Fox Drawer — Press a hotkey and the mouse draws a fox on screen!
+Auto Drawer — Press a hotkey and the mouse draws a pattern on screen!
+
+Patterns are JSON files containing stroke data (relative coordinates).
+The drawing always starts centered at the current mouse position.
 
 Usage:
-    python3 fox_drawer.py                        # default: Ctrl+Shift+F
-    python3 fox_drawer.py --hotkey ctrl+alt+f    # custom hotkey
-    python3 fox_drawer.py --scale 2.0            # bigger fox
-    python3 fox_drawer.py --speed 0.005          # faster drawing (seconds per step)
-    python3 fox_drawer.py --app mspaint          # optimized for MS Paint (adds click)
+    python3 fox_drawer.py                            # draws pattern_fox.json at cursor
+    python3 fox_drawer.py --pattern pattern_fox.json # explicit pattern file
+    python3 fox_drawer.py --hotkey ctrl+alt+f        # custom hotkey
+    python3 fox_drawer.py --scale 2.0                # bigger drawing
+    python3 fox_drawer.py --speed 0.005              # faster drawing
+
+Pattern file format (JSON):
+    {
+        "name": "my_pattern",
+        "description": "optional description",
+        "strokes": [
+            [[x1, y1], [x2, y2], ...],   // stroke 1 (pen down, draw, pen up)
+            [[x1, y1], [x2, y2], ...],   // stroke 2
+            ...
+        ]
+    }
+
+    Coordinates are relative to center (0, 0) in unscaled pixels.
+    Positive X = right, positive Y = down.
+    Each stroke is a separate pen-down/pen-up sequence.
+    Complex drawings are fully supported — just add more strokes and points.
 
 Requirements:
     pip install pyautogui pynput
 
 Works on: Linux (X11), macOS, Windows
-Note: On Wayland (modern Linux), you may need X11 compatibility or xdotool fallback.
 """
 
 import argparse
-import math
+import json
+import os
 import sys
 import time
 import threading
@@ -36,139 +55,34 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Fox path generation
+# Pattern loading
 # ---------------------------------------------------------------------------
 
-def generate_fox_path(center_x, center_y, scale=1.0):
-    """
-    Returns a list of (x, y) tuples that trace a fox outline:
-    - Two pointy ears
-    - Round head with puffy cheeks
-    - Snout/chin
-    - Oval body
-    - Bushy curved tail
-    - Two small legs
-    - Two small eyes and a nose (lifted strokes)
-    
-    All coordinates are absolute screen pixels.
-    """
-    strokes = []          # list of stroke-lists; each stroke is a list of (x,y)
-    current_stroke = []
+def load_pattern(path):
+    """Load a pattern JSON file and return its stroke data."""
+    with open(path, 'r') as f:
+        data = json.load(f)
 
-    def flush():
-        nonlocal current_stroke
-        if current_stroke:
-            strokes.append(current_stroke)
-            current_stroke = []
+    if 'strokes' not in data:
+        print(f"ERROR: Pattern file '{path}' missing 'strokes' key.")
+        sys.exit(1)
 
-    def pt(x, y):
-        current_stroke.append((round(center_x + x * scale),
-                               round(center_y + y * scale)))
-
-    def arc(cx, cy, rx, ry, start_deg, end_deg, steps=30):
-        for i in range(steps + 1):
-            angle = math.radians(start_deg + (end_deg - start_deg) * i / steps)
-            pt(cx + rx * math.cos(angle), cy + ry * math.sin(angle))
-
-    def line(x1, y1, x2, y2, steps=12):
-        for i in range(steps + 1):
-            t = i / steps
-            pt(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)
-
-    # ── Outer head + ears (one continuous stroke) ──────────────────────────
-
-    # Start at left jaw
-    pt(-55, 40)
-
-    # Left cheek up to ear base
-    arc(-55, 0, 28, 45, 100, 180, steps=12)
-
-    # LEFT EAR — sharp triangle
-    line(-75, -25, -95, -140, steps=18)     # up to tip
-    line(-95, -140, -45, -55, steps=18)     # back down
-
-    # Top of head arc (between ears)
-    arc(0, -50, 45, 18, 180, 0, steps=20)
-
-    # RIGHT EAR — sharp triangle
-    line(45, -55, 95, -140, steps=18)       # up to tip
-    line(95, -140, 75, -25, steps=18)       # back down
-
-    # Right cheek down to jaw
-    arc(55, 0, 28, 45, 0, 80, steps=12)
-
-    # Snout / chin (V shape)
-    line(55, 38, 15, 58, steps=10)
-    line(15, 58, 0, 62, steps=5)
-    line(0, 62, -15, 58, steps=5)
-    line(-15, 58, -55, 40, steps=10)
-
-    flush()
-
-    # ── Body (oval below head) ─────────────────────────────────────────────
-
-    # Neck-left down to body
-    line(-40, 50, -55, 90, steps=8)
-    # Body oval
-    arc(0, 145, 60, 55, 180, 520, steps=50)
-    # Neck-right back up
-    line(55, 90, 40, 50, steps=8)
-
-    flush()
-
-    # ── Tail (bushy, curves to the right & up) ────────────────────────────
-
-    tail_bx, tail_by = 55, 120
-    for i in range(50):
-        t = i / 49
-        # Main curve sweeping right and up
-        tx = tail_bx + 90 * t + 30 * math.sin(t * math.pi)
-        ty = tail_by - 100 * t * t + 15 * math.sin(t * math.pi * 2)
-        pt(tx, ty)
-    # Return stroke (bushy bottom edge)
-    for i in range(50):
-        t = 1.0 - i / 49
-        tx = tail_bx + 90 * t + 30 * math.sin(t * math.pi) + 12
-        ty = tail_by - 100 * t * t + 15 * math.sin(t * math.pi * 2) + 18
-        pt(tx, ty)
-
-    flush()
-
-    # ── Left front leg ────────────────────────────────────────────────────
-
-    line(-30, 195, -30, 230, steps=8)
-    line(-30, 230, -18, 230, steps=5)
-
-    flush()
-
-    # ── Right front leg ───────────────────────────────────────────────────
-
-    line(30, 195, 30, 230, steps=8)
-    line(30, 230, 42, 230, steps=5)
-
-    flush()
-
-    # ── Left eye (small dot / circle) ─────────────────────────────────────
-
-    arc(-25, -5, 6, 6, 0, 360, steps=16)
-
-    flush()
-
-    # ── Right eye ─────────────────────────────────────────────────────────
-
-    arc(25, -5, 6, 6, 0, 360, steps=16)
-
-    flush()
-
-    # ── Nose (small triangle) ─────────────────────────────────────────────
-
-    line(-6, 30, 0, 38, steps=6)
-    line(0, 38, 6, 30, steps=6)
-    line(6, 30, -6, 30, steps=6)
-
-    flush()
-
+    strokes = data['strokes']
+    name = data.get('name', os.path.basename(path))
+    total_points = sum(len(s) for s in strokes)
+    print(f"  Loaded pattern '{name}': {len(strokes)} strokes, {total_points} points")
     return strokes
+
+
+def resolve_pattern(strokes, center_x, center_y, scale):
+    """Convert relative pattern coordinates to absolute screen coordinates."""
+    resolved = []
+    for stroke in strokes:
+        resolved.append([
+            (round(center_x + pt[0] * scale), round(center_y + pt[1] * scale))
+            for pt in stroke
+        ])
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +91,9 @@ def generate_fox_path(center_x, center_y, scale=1.0):
 
 _drawing = False   # prevent overlapping draws
 
-def draw_fox(center_x, center_y, scale, speed, pause_between_strokes=0.15):
+
+def draw_pattern(strokes, center_x, center_y, scale, speed,
+                 pause_between_strokes=0.15):
     """Execute the drawing by controlling the mouse."""
     global _drawing
     if _drawing:
@@ -187,11 +103,11 @@ def draw_fox(center_x, center_y, scale, speed, pause_between_strokes=0.15):
     pyautogui.PAUSE = 0            # we handle our own timing
     pyautogui.FAILSAFE = True      # move mouse to corner to abort
 
-    strokes = generate_fox_path(center_x, center_y, scale)
-    print(f"  Drawing fox: {len(strokes)} strokes, "
-          f"{sum(len(s) for s in strokes)} total points …")
+    resolved = resolve_pattern(strokes, center_x, center_y, scale)
+    print(f"  Drawing: {len(resolved)} strokes, "
+          f"{sum(len(s) for s in resolved)} total points ...")
 
-    for si, stroke in enumerate(strokes):
+    for stroke in resolved:
         if len(stroke) < 2:
             continue
 
@@ -207,7 +123,7 @@ def draw_fox(center_x, center_y, scale, speed, pause_between_strokes=0.15):
 
         time.sleep(pause_between_strokes)
 
-    print("  ✓ Fox drawn!")
+    print("  Done!")
     _drawing = False
 
 
@@ -224,6 +140,7 @@ MODIFIER_MAP = {
     'super': '<cmd>',
     'win':   '<cmd>',
 }
+
 
 def parse_hotkey(spec: str) -> str:
     """
@@ -244,52 +161,60 @@ def parse_hotkey(spec: str) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
+def find_default_pattern():
+    """Look for a default pattern file next to this script."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for name in ('pattern_fox.json',):
+        path = os.path.join(script_dir, name)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="🦊 Fox Drawer — hotkey-triggered mouse drawing of a fox")
+        description="Auto Drawer — hotkey-triggered mouse drawing from pattern files")
+    parser.add_argument('--pattern', default=None,
+                        help='Path to pattern JSON file (default: pattern_fox.json)')
     parser.add_argument('--hotkey', default='ctrl+shift+f',
                         help='Hotkey combo (default: ctrl+shift+f)')
     parser.add_argument('--scale', type=float, default=1.2,
                         help='Drawing scale multiplier (default: 1.2)')
     parser.add_argument('--speed', type=float, default=0.008,
                         help='Seconds per point movement (default: 0.008)')
-    parser.add_argument('--cx', type=int, default=None,
-                        help='Center X (default: screen center)')
-    parser.add_argument('--cy', type=int, default=None,
-                        help='Center Y (default: screen center)')
-    parser.add_argument('--at-cursor', action='store_true',
-                        help='Draw at current mouse position instead of screen center')
 
     args = parser.parse_args()
 
-    # Determine center
-    screen_w, screen_h = pyautogui.size()
-    print(f"  Screen size: {screen_w}×{screen_h}")
+    # Resolve pattern file
+    pattern_path = args.pattern
+    if pattern_path is None:
+        pattern_path = find_default_pattern()
+        if pattern_path is None:
+            print("ERROR: No pattern file found. Use --pattern <file.json>")
+            sys.exit(1)
 
-    def get_center():
-        if args.at_cursor:
-            return pyautogui.position()
-        cx = args.cx if args.cx is not None else screen_w // 2
-        cy = args.cy if args.cy is not None else screen_h // 2
-        return cx, cy
+    strokes = load_pattern(pattern_path)
+
+    screen_w, screen_h = pyautogui.size()
+    print(f"  Screen size: {screen_w}x{screen_h}")
 
     hotkey_str = parse_hotkey(args.hotkey)
-    print(f"\n  🦊 Fox Drawer ready!")
-    print(f"  Hotkey : {args.hotkey}  (internal: {hotkey_str})")
-    print(f"  Scale  : {args.scale}")
-    print(f"  Speed  : {args.speed}s per step")
-    print(f"  Center : {'cursor position' if args.at_cursor else f'{get_center()}'}")
+    print(f"\n  Auto Drawer ready!")
+    print(f"  Hotkey  : {args.hotkey}  (internal: {hotkey_str})")
+    print(f"  Pattern : {pattern_path}")
+    print(f"  Scale   : {args.scale}")
+    print(f"  Speed   : {args.speed}s per step")
+    print(f"  Center  : current mouse position at time of hotkey press")
     print(f"\n  Open a drawing app (e.g. KolourPaint, GIMP, MS Paint),")
-    print(f"  then press {args.hotkey} to draw the fox!")
+    print(f"  then press {args.hotkey} to draw!")
     print(f"  Press Ctrl+C here to quit.\n")
-    print(f"  ⚠  FAILSAFE: quickly move mouse to top-left corner to abort.\n")
+    print(f"  FAILSAFE: quickly move mouse to top-left corner to abort.\n")
 
     def on_hotkey():
-        cx, cy = get_center()
-        print(f"\n  🎨 Hotkey pressed! Drawing at ({cx}, {cy}) …")
-        # Run in thread so hotkey listener isn't blocked
-        t = threading.Thread(target=draw_fox,
-                             args=(cx, cy, args.scale, args.speed),
+        cx, cy = pyautogui.position()
+        print(f"\n  Hotkey pressed! Drawing at ({cx}, {cy}) ...")
+        t = threading.Thread(target=draw_pattern,
+                             args=(strokes, cx, cy, args.scale, args.speed),
                              daemon=True)
         t.start()
 
@@ -299,7 +224,7 @@ def main():
         with keyboard.GlobalHotKeys(hotkey_dict) as listener:
             listener.join()
     except KeyboardInterrupt:
-        print("\n  Bye bye! 🦊")
+        print("\n  Bye!")
 
 
 if __name__ == '__main__':
